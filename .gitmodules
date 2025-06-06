@@ -1,3 +1,6 @@
 [submodule "data/lm_dict"]
 	path = data/lm_dict
 	url = https://github.com/MengLingchao/Chinese_financial_sentiment_dictionary.git
+[submodule "data/stop_words"]
+	path = data/stop_words
+	url = https://github.com/goto456/stopwords.git
