@@ -2,3 +2,5 @@ jieba==0.42.1
 pandas==2.3.0
 ipykernel==6.29.5
 openpyxl==3.1.5
+gensim==4.3.3
+scikit-learn==1.7.0
