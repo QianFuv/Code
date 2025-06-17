@@ -73,7 +73,9 @@ class EmotionDictProcessor:
             # 查找并读取积极词工作表
             positive_sheet_names = ['positive', 'Positive', 'POSITIVE', '积极词', '正面词']
             for sheet_name in excel_file.sheet_names:
-                if any(pos_name in sheet_name.lower() for pos_name in ['positive', 'pos']): # type: ignore
+                # 确保sheet_name是字符串类型
+                sheet_name_str = str(sheet_name).lower()
+                if any(pos_name in sheet_name_str for pos_name in ['positive', 'pos']):
                     df_pos = pd.read_excel(self.lm_dict_path, sheet_name=sheet_name)
                     # 获取第一列数据作为积极词
                     if len(df_pos.columns) > 0:
@@ -84,7 +86,9 @@ class EmotionDictProcessor:
             # 查找并读取消极词工作表  
             negative_sheet_names = ['negative', 'Negative', 'NEGATIVE', '消极词', '负面词']
             for sheet_name in excel_file.sheet_names:
-                if any(neg_name in sheet_name.lower() for neg_name in ['negative', 'neg']): # type: ignore
+                # 确保sheet_name是字符串类型
+                sheet_name_str = str(sheet_name).lower()
+                if any(neg_name in sheet_name_str for neg_name in ['negative', 'neg']):
                     df_neg = pd.read_excel(self.lm_dict_path, sheet_name=sheet_name)
                     # 获取第一列数据作为消极词
                     if len(df_neg.columns) > 0:
@@ -97,8 +101,10 @@ class EmotionDictProcessor:
                 logger.warning("未找到明确的积极词/消极词工作表，尝试读取所有工作表")
                 
                 for sheet_name in excel_file.sheet_names:
+                    # 确保sheet_name是字符串类型
+                    sheet_name_str = str(sheet_name).lower()
                     # 跳过可能的介绍工作表
-                    if any(intro in sheet_name.lower() for intro in ['介绍', 'intro', 'readme', '说明']): # type: ignore
+                    if any(intro in sheet_name_str for intro in ['介绍', 'intro', 'readme', '说明']):
                         continue
                     
                     df = pd.read_excel(self.lm_dict_path, sheet_name=sheet_name)
@@ -243,12 +249,3 @@ def merge_emotion_dicts(lm_dict_path: str = "data/original_data/emo_dict/lm_dict
     """
     processor = EmotionDictProcessor(lm_dict_path, rfs_dict_path, output_path)
     return processor.process_emotion_dict()
-
-
-if __name__ == "__main__":
-    # 测试代码
-    result = merge_emotion_dicts()
-    if result:
-        print(f"情感词典合并成功，输出文件: {result}")
-    else:
-        print("情感词典合并失败")
