@@ -1,6 +1,0 @@
-[submodule "data/original_data/stop_words"]
-	path = data/original_data/stop_words
-	url = https://github.com/goto456/stopwords.git
-[submodule "data/original_data/emo_dict/lm_dict"]
-	path = data/original_data/emo_dict/lm_dict
-	url = https://github.com/MengLingchao/Chinese_financial_sentiment_dictionary.git
