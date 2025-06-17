@@ -1,2 +1,4 @@
+__pycache__
+
 /data/original_data/text_data/*
 !/data/original_data/text_data/README.md
