@@ -239,16 +239,3 @@ def load_merged_stopwords(stopwords_path: str = "data/processed_data/stop_words.
         logger.error(f"加载停用词时发生错误: {e}")
     
     return stopwords
-
-
-if __name__ == "__main__":
-    # 测试代码
-    result = merge_stopwords()
-    if result:
-        print(f"停用词合并成功，输出文件: {result}")
-        
-        # 测试加载
-        stopwords = load_merged_stopwords()
-        print(f"加载停用词成功，共 {len(stopwords)} 个词")
-    else:
-        print("停用词合并失败")
