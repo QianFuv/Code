@@ -8,14 +8,6 @@
 2. 负语调 (NTONE)  
 3. 相似度 (SIMILARITY)
 4. 可读性 (READABILITY)
-
-处理的文本类型：
-- 央行文本：季度货币政策执行报告
-- 政府文本：省级政府工作报告
-- 管理层文本：上市公司管理层讨论与分析
-
-作者：根据论文要求实现
-日期：2025年
 """
 
 import os
@@ -24,7 +16,7 @@ import pandas as pd
 import numpy as np
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
 from datetime import datetime
 from tqdm import tqdm
 
@@ -34,6 +26,7 @@ from utils import (
     BGEVectorizer,
     SimilarityCalculator,
     ReadabilityCalculator,
+    SentimentCalculator,
     create_bge_vectorizer,
     create_sentiment_calculator_from_file
 )
@@ -71,14 +64,14 @@ class TextMetricCalculator:
         self.bge_model_name = bge_model_name
         
         # 初始化工具组件
-        self.preprocessor = None
-        self.vectorizer = None
-        self.sentiment_calculator = None
-        self.readability_calculator = None
+        self.preprocessor: Optional[TextPreprocessor] = None
+        self.vectorizer: Optional[BGEVectorizer] = None
+        self.sentiment_calculator: Optional[SentimentCalculator] = None
+        self.readability_calculator: Optional[ReadabilityCalculator] = None
         
         # 数据存储
-        self.numeric_data = None
-        self.text_metrics_data = None
+        self.numeric_data: Optional[pd.DataFrame] = None
+        self.text_metrics_data: Optional[pd.DataFrame] = None
         
         # 相似度计算的基准文本（用于央行和政府文本）
         self.baseline_texts = {
@@ -163,6 +156,34 @@ class TextMetricCalculator:
         """
         try:
             if not text or not text.strip():
+                return {
+                    'tone': 0.0,
+                    'negative_tone': 0.0,
+                    'similarity': 0.0,
+                    'readability': 0.0
+                }
+            
+            # 检查计算器是否已初始化
+            if self.sentiment_calculator is None:
+                logger.error("情感计算器未初始化")
+                return {
+                    'tone': 0.0,
+                    'negative_tone': 0.0,
+                    'similarity': 0.0,
+                    'readability': 0.0
+                }
+            
+            if self.vectorizer is None:
+                logger.error("向量化器未初始化")
+                return {
+                    'tone': 0.0,
+                    'negative_tone': 0.0,
+                    'similarity': 0.0,
+                    'readability': 0.0
+                }
+            
+            if self.readability_calculator is None:
+                logger.error("可读性计算器未初始化")
                 return {
                     'tone': 0.0,
                     'negative_tone': 0.0,
@@ -296,12 +317,12 @@ class TextMetricCalculator:
             baseline_text = self.baseline_texts['government']
             
             # 使用tqdm显示进度
-            with tqdm(valid_data.iterrows(), 
+            with tqdm(enumerate(valid_data.iterrows()), 
                      desc="处理政府文本", 
                      unit="条", 
                      total=len(valid_data)) as pbar:
                 
-                for idx, row in pbar:
+                for row_num, (idx, row) in pbar:
                     try:
                         province = str(row['省份名称']).strip()
                         year = int(row['会计年'])
@@ -317,7 +338,7 @@ class TextMetricCalculator:
                         government_metrics[(province, year)] = metrics
                         
                     except Exception as e:
-                        logger.error(f"处理政府文本第 {idx + 1} 行时发生错误: {e}")
+                        logger.error(f"处理政府文本第 {row_num + 1} 行时发生错误: {e}")
                         continue
             
             logger.info(f"🎉 政府文本处理完成，共处理 {len(government_metrics)} 条数据")
@@ -359,12 +380,12 @@ class TextMetricCalculator:
             logger.info("正在整理文本数据...")
             company_texts = {}  # {股票代码: {年份: 文本内容}}
             
-            with tqdm(valid_data.iterrows(), 
+            with tqdm(enumerate(valid_data.iterrows()), 
                      desc="整理管理层文本", 
                      unit="条", 
                      total=len(valid_data)) as pbar:
                 
-                for idx, row in pbar:
+                for row_num, (idx, row) in pbar:
                     try:
                         stock_code = str(row['股票代码']).strip()
                         year = int(row['会计年度'])
@@ -378,7 +399,7 @@ class TextMetricCalculator:
                         company_texts[stock_code][year] = text_content
                         
                     except Exception as e:
-                        logger.error(f"整理管理层文本第 {idx + 1} 行时发生错误: {e}")
+                        logger.error(f"整理管理层文本第 {row_num + 1} 行时发生错误: {e}")
                         continue
             
             logger.info(f"整理完成，共 {len(company_texts)} 家公司的文本数据")
@@ -400,6 +421,11 @@ class TextMetricCalculator:
                             pbar.set_postfix(code=stock_code[:6], year=year)
                             
                             # 计算基本的情感和可读性指标
+                            if self.sentiment_calculator is None or self.readability_calculator is None:
+                                logger.error("计算器未初始化，跳过此条记录")
+                                pbar.update(1)
+                                continue
+                                
                             sentiment_metrics = self.sentiment_calculator.calculate_all_metrics(current_text)
                             tone = sentiment_metrics['tone']
                             negative_tone = sentiment_metrics['negative_tone']
@@ -410,9 +436,9 @@ class TextMetricCalculator:
                             
                             # 计算与前一年的相似度
                             similarity = 0.0
-                            previous_year = year - 1
+                            previous_year = int(year) - 1
                             
-                            if previous_year in year_texts:
+                            if previous_year in year_texts and self.vectorizer is not None:
                                 previous_text = year_texts[previous_year]
                                 if previous_text and previous_text.strip():
                                     similarity = SimilarityCalculator.text_similarity(
@@ -487,6 +513,10 @@ class TextMetricCalculator:
         try:
             logger.info("开始合并文本指标与数值数据...")
             
+            # 检查数值数据是否存在
+            if self.numeric_data is None:
+                raise ValueError("数值数据未加载")
+            
             # 复制数值数据
             merged_data = self.numeric_data.copy()
             
@@ -532,10 +562,10 @@ class TextMetricCalculator:
                         
                         if year in central_bank_metrics:
                             metrics = central_bank_metrics[year]
-                            merged_data.loc[idx, '央行_净语调'] = metrics['tone']
-                            merged_data.loc[idx, '央行_负语调'] = metrics['negative_tone']
-                            merged_data.loc[idx, '央行_相似度'] = metrics['similarity']
-                            merged_data.loc[idx, '央行_可读性'] = metrics['readability']
+                            merged_data.at[idx, '央行_净语调'] = metrics['tone']
+                            merged_data.at[idx, '央行_负语调'] = metrics['negative_tone']
+                            merged_data.at[idx, '央行_相似度'] = metrics['similarity']
+                            merged_data.at[idx, '央行_可读性'] = metrics['readability']
                             central_bank_matched += 1
                             
                     except Exception as e:
@@ -571,10 +601,10 @@ class TextMetricCalculator:
                         gov_key = (province_key, year)
                         if gov_key in government_metrics:
                             metrics = government_metrics[gov_key]
-                            merged_data.loc[idx, '政府_净语调'] = metrics['tone']
-                            merged_data.loc[idx, '政府_负语调'] = metrics['negative_tone']
-                            merged_data.loc[idx, '政府_相似度'] = metrics['similarity']
-                            merged_data.loc[idx, '政府_可读性'] = metrics['readability']
+                            merged_data.at[idx, '政府_净语调'] = metrics['tone']
+                            merged_data.at[idx, '政府_负语调'] = metrics['negative_tone']
+                            merged_data.at[idx, '政府_相似度'] = metrics['similarity']
+                            merged_data.at[idx, '政府_可读性'] = metrics['readability']
                             government_matched += 1
                             
                     except Exception as e:
@@ -607,10 +637,10 @@ class TextMetricCalculator:
                         mgmt_key = (stock_code, year)
                         if mgmt_key in management_metrics:
                             metrics = management_metrics[mgmt_key]
-                            merged_data.loc[idx, '管理层_净语调'] = metrics['tone']
-                            merged_data.loc[idx, '管理层_负语调'] = metrics['negative_tone']
-                            merged_data.loc[idx, '管理层_相似度'] = metrics['similarity']
-                            merged_data.loc[idx, '管理层_可读性'] = metrics['readability']
+                            merged_data.at[idx, '管理层_净语调'] = metrics['tone']
+                            merged_data.at[idx, '管理层_负语调'] = metrics['negative_tone']
+                            merged_data.at[idx, '管理层_相似度'] = metrics['similarity']
+                            merged_data.at[idx, '管理层_可读性'] = metrics['readability']
                             management_matched += 1
                             
                     except Exception as e:
@@ -651,14 +681,14 @@ class TextMetricCalculator:
             logger.info(f"正在保存结果到: {output_path}")
             
             # 确保输出目录存在
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path_obj = Path(output_path)
+            output_path_obj.parent.mkdir(parents=True, exist_ok=True)
             
             # 保存为CSV文件
-            merged_data.to_csv(output_path, index=False, encoding='utf-8')
+            merged_data.to_csv(output_path_obj, index=False, encoding='utf-8')
             
             logger.info(f"✅ 结果保存完成")
-            logger.info(f"文件大小: {output_path.stat().st_size / 1024 / 1024:.2f} MB")
+            logger.info(f"文件大小: {output_path_obj.stat().st_size / 1024 / 1024:.2f} MB")
             logger.info(f"数据形状: {merged_data.shape}")
             
         except Exception as e:
