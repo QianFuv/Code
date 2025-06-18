@@ -6,3 +6,6 @@ __pycache__
 !/data/original_data/text_data/README.md
 /data/original_data/numeric_data/*
 !/data/original_data/numeric_data/README.md
+
+/data/processed_data/origin_with_textmetric.csv
+/data/processed_data/origin_with_textmetric_short_sighted.csv
