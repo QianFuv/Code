@@ -5,7 +5,7 @@
 
 本模块提供文本分析的核心工具函数，包括：
 1. 统一的文本预处理（jieba分词 + 停用词过滤）
-2. 基于Doc2vec的文本向量化和相似度计算
+2. 基于BGE(sentence-transformers)的文本向量化和相似度计算
 3. 基于句子长度的文本可读性计算
 4. 基于情感词典的净语调和负语调计算
 """
@@ -16,9 +16,8 @@ import numpy as np
 import logging
 from typing import List, Tuple, Dict, Optional, Union, Set
 from pathlib import Path
-from gensim.models.doc2vec import Doc2Vec, TaggedDocument
-from gensim.utils import simple_preprocess
 from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -128,129 +127,184 @@ class TextPreprocessor:
             return []
 
 
-class TextVectorizer:
-    """文本向量化器类
+class BGEVectorizer:
+    """BGE文本向量化器类
     
-    使用Doc2vec模型进行文本向量化，支持训练和推理。
+    使用sentence-transformers的BGE模型进行文本向量化，支持中文文本相似度计算。
     """
     
-    def __init__(self, vector_size: int = 350, window: int = 5, min_count: int = 1, 
-                 workers: int = 4, epochs: int = 10, preprocessor: Optional[TextPreprocessor] = None):
-        """初始化文本向量化器
+    def __init__(self, model_name: str = "BAAI/bge-large-zh-v1.5", 
+                 device: Optional[str] = None, 
+                 normalize_embeddings: bool = True,
+                 use_instruction: bool = False,
+                 instruction: str = "为这个句子生成表示以用于检索相关文章：",
+                 preprocessor: Optional[TextPreprocessor] = None):
+        """初始化BGE向量化器
         
         Args:
-            vector_size (int): 向量维度，默认350
-            window (int): 窗口大小，默认5
-            min_count (int): 最小词频，默认1
-            workers (int): 线程数，默认4
-            epochs (int): 训练轮数，默认10
+            model_name (str): BGE模型名称，默认为bge-large-zh-v1.5
+            device (str, optional): 计算设备，如果为None则自动选择
+            normalize_embeddings (bool): 是否归一化嵌入向量，默认True
+            use_instruction (bool): 是否使用指令前缀，默认False
+            instruction (str): 指令前缀文本
             preprocessor (Optional[TextPreprocessor]): 文本预处理器
         """
-        self.vector_size = vector_size
-        self.window = window
-        self.min_count = min_count
-        self.workers = workers
-        self.epochs = epochs
-        self.model: Optional[Doc2Vec] = None
+        self.model_name = model_name
+        self.device = device
+        self.normalize_embeddings = normalize_embeddings
+        self.use_instruction = use_instruction
+        self.instruction = instruction
         self.preprocessor = preprocessor or TextPreprocessor()
-        
-    def _preprocess_text(self, text: str) -> List[str]:
+        self.model = None   
+
+        # 初始化模型
+        self.SentenceTransformer = SentenceTransformer
+        self._load_model()
+    
+    def _load_model(self) -> None:
+        """加载BGE模型"""
+        try:
+            logger.info(f"正在加载BGE模型: {self.model_name}")
+            
+            # 创建模型配置
+            model_kwargs = {}
+            if self.device is not None:
+                model_kwargs['device'] = self.device
+            
+            # 加载模型
+            self.model = self.SentenceTransformer(
+                self.model_name,
+                **model_kwargs
+            )
+            
+            logger.info(f"BGE模型加载完成")
+            logger.info(f"模型信息: {self.model_name}")
+            logger.info(f"最大序列长度: {self.model.max_seq_length}")
+            logger.info(f"嵌入维度: {self.model.get_sentence_embedding_dimension()}")
+            
+        except Exception as e:
+            logger.error(f"加载BGE模型时发生错误: {e}")
+            raise
+    
+    def _preprocess_text(self, text: str) -> str:
         """预处理文本
         
         Args:
             text (str): 原始文本
             
         Returns:
-            List[str]: 预处理后的词汇列表
+            str: 预处理后的文本
         """
-        # 使用统一的预处理器
-        words = self.preprocessor.get_word_list(text)
+        # 使用统一的预处理器，明确指定需要字符串结果
+        cleaned_result = self.preprocessor.clean_text(text)
         
-        # 如果分词结果为空，使用gensim的simple_preprocess作为备选
-        if not words:
-            words = simple_preprocess(text, deacc=True, min_len=1, max_len=15)
+        # 检查返回类型，确保得到的是字符串
+        if isinstance(cleaned_result, tuple):
+            # 如果返回了元组（当keep_original_for_readability=True时），取第一个元素（原始文本）
+            # 但在我们的使用场景中，这不应该发生，因为clean_text默认返回字符串
+            logger.warning("clean_text返回了元组，但预期是字符串。使用原始文本。")
+            cleaned_text = cleaned_result[0]
+        else:
+            cleaned_text = cleaned_result
         
-        return words
+        # 如果启用指令前缀，则添加指令
+        if self.use_instruction:
+            cleaned_text = self.instruction + cleaned_text
+        
+        return cleaned_text
     
-    def train_model(self, documents: List[str], document_ids: Optional[List[str]] = None) -> None:
-        """训练Doc2vec模型
-        
-        Args:
-            documents (List[str]): 文档列表
-            document_ids (Optional[List[str]]): 文档ID列表，如果不提供则自动生成
-        """
-        try:
-            # 如果没有提供文档ID，自动生成
-            if document_ids is None:
-                document_ids = [f"doc_{i}" for i in range(len(documents))]
-            
-            # 预处理文档并创建TaggedDocument
-            tagged_docs = []
-            for i, doc in enumerate(documents):
-                if doc and doc.strip():  # 确保文档不为空
-                    processed_words = self._preprocess_text(doc)
-                    if processed_words:  # 确保预处理后的词汇不为空
-                        tagged_docs.append(TaggedDocument(words=processed_words, tags=[document_ids[i]]))
-            
-            if not tagged_docs:
-                raise ValueError("没有有效的文档可用于训练")
-            
-            # 初始化并训练Doc2vec模型
-            self.model = Doc2Vec(
-                vector_size=self.vector_size,
-                window=self.window,
-                min_count=self.min_count,
-                workers=self.workers,
-                epochs=self.epochs,
-                dm=1  # 使用PV-DM算法
-            )
-            
-            # 构建词汇表
-            self.model.build_vocab(tagged_docs)
-            
-            # 训练模型
-            self.model.train(tagged_docs, total_examples=self.model.corpus_count, epochs=self.model.epochs)
-            
-            logger.info(f"Doc2vec模型训练完成，文档数量: {len(tagged_docs)}, 向量维度: {self.vector_size}")
-            
-        except Exception as e:
-            logger.error(f"训练Doc2vec模型时发生错误: {e}")
-            raise
-    
-    def get_document_vector(self, text: str) -> Optional[np.ndarray]:
-        """获取文档向量
+    def get_text_vector(self, text: str) -> Optional[np.ndarray]:
+        """获取单个文本的向量表示
         
         Args:
             text (str): 输入文本
             
         Returns:
-            Optional[np.ndarray]: 文档向量，如果失败则返回None
+            Optional[np.ndarray]: 文本向量，如果失败则返回None
         """
         if self.model is None:
-            logger.error("模型尚未训练，请先调用train_model方法")
+            logger.error("模型尚未加载")
             return None
         
         try:
             # 预处理文本
-            processed_words = self._preprocess_text(text)
+            processed_text = self._preprocess_text(text)
             
-            if not processed_words:
+            if not processed_text.strip():
                 logger.warning("预处理后的文本为空")
                 return None
             
-            # 推理文档向量
-            vector = self.model.infer_vector(processed_words)
-            return vector
+            # 生成嵌入 - 禁用进度条
+            embeddings = self.model.encode(
+                [processed_text],
+                normalize_embeddings=self.normalize_embeddings,
+                convert_to_numpy=True,
+                show_progress_bar=False  # 禁用进度条
+            )
+            
+            return embeddings[0]
             
         except Exception as e:
-            logger.error(f"获取文档向量时发生错误: {e}")
+            logger.error(f"获取文本向量时发生错误: {e}")
             return None
+    
+    def get_text_vectors(self, texts: List[str], batch_size: int = 32) -> List[Optional[np.ndarray]]:
+        """批量获取文本向量表示
+        
+        Args:
+            texts (List[str]): 文本列表
+            batch_size (int): 批处理大小，默认32
+            
+        Returns:
+            List[Optional[np.ndarray]]: 文本向量列表
+        """
+        if self.model is None:
+            logger.error("模型尚未加载")
+            return [None] * len(texts)
+        
+        try:
+            # 预处理所有文本
+            processed_texts = []
+            valid_indices = []
+            
+            for i, text in enumerate(texts):
+                processed_text = self._preprocess_text(text)
+                if processed_text.strip():
+                    processed_texts.append(processed_text)
+                    valid_indices.append(i)
+                else:
+                    logger.warning(f"第{i}个文本预处理后为空，跳过")
+            
+            if not processed_texts:
+                logger.warning("所有文本预处理后都为空")
+                return [None] * len(texts)
+            
+            # 批量生成嵌入 - 禁用进度条
+            embeddings = self.model.encode(
+                processed_texts,
+                batch_size=batch_size,
+                normalize_embeddings=self.normalize_embeddings,
+                convert_to_numpy=True,
+                show_progress_bar=False  # 禁用进度条
+            )
+            
+            # 重建完整的结果列表
+            results: List[Optional[np.ndarray]] = [None] * len(texts)
+            for i, embedding in enumerate(embeddings):
+                original_index = valid_indices[i]
+                results[original_index] = embedding
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"批量获取文本向量时发生错误: {e}")
+            return [None] * len(texts)
 
 
 class SimilarityCalculator:
     """相似度计算器类
     
-    基于文档向量计算余弦相似度。
+    基于BGE文档向量计算余弦相似度。
     """
     
     @staticmethod
@@ -258,6 +312,7 @@ class SimilarityCalculator:
         """计算两个向量的余弦相似度
         
         基于公式：Sim = (v1 · v2) / (||v1|| * ||v2||)
+        如果向量已经归一化，则可以直接使用点积计算
         
         Args:
             vector1 (np.ndarray): 第一个向量
@@ -273,16 +328,29 @@ class SimilarityCalculator:
                 return 0.0
             
             # 确保向量为numpy数组
-            v1 = np.array(vector1).reshape(1, -1)
-            v2 = np.array(vector2).reshape(1, -1)
+            v1 = np.array(vector1)
+            v2 = np.array(vector2)
             
             # 检查向量维度是否匹配
-            if v1.shape[1] != v2.shape[1]:
-                logger.error(f"向量维度不匹配: {v1.shape[1]} vs {v2.shape[1]}")
+            if v1.shape != v2.shape:
+                logger.error(f"向量维度不匹配: {v1.shape} vs {v2.shape}")
+                return 0.0
+            
+            # 检查向量是否为零向量
+            if np.allclose(v1, 0) or np.allclose(v2, 0):
+                logger.warning("存在零向量")
                 return 0.0
             
             # 计算余弦相似度
-            similarity = cosine_similarity(v1, v2)[0, 0]
+            # 如果向量已经归一化，可以直接使用点积
+            if np.allclose(np.linalg.norm(v1), 1.0) and np.allclose(np.linalg.norm(v2), 1.0):
+                # 向量已归一化，直接计算点积
+                similarity = np.dot(v1, v2)
+            else:
+                # 向量未归一化，使用sklearn的cosine_similarity
+                v1 = v1.reshape(1, -1)
+                v2 = v2.reshape(1, -1)
+                similarity = cosine_similarity(v1, v2)[0, 0]
             
             # 处理可能的NaN值
             if np.isnan(similarity):
@@ -296,21 +364,21 @@ class SimilarityCalculator:
             return 0.0
     
     @staticmethod
-    def text_similarity(text1: str, text2: str, vectorizer: TextVectorizer) -> float:
+    def text_similarity(text1: str, text2: str, vectorizer: BGEVectorizer) -> float:
         """计算两个文本的相似度
         
         Args:
             text1 (str): 第一个文本
             text2 (str): 第二个文本
-            vectorizer (TextVectorizer): 已训练的向量化器
+            vectorizer (BGEVectorizer): BGE向量化器
             
         Returns:
             float: 文本相似度，范围[-1, 1]
         """
         try:
             # 获取文档向量
-            vector1 = vectorizer.get_document_vector(text1)
-            vector2 = vectorizer.get_document_vector(text2)
+            vector1 = vectorizer.get_text_vector(text1)
+            vector2 = vectorizer.get_text_vector(text2)
             
             # 计算相似度
             return SimilarityCalculator.cosine_similarity_vectors(vector1, vector2)
@@ -318,6 +386,39 @@ class SimilarityCalculator:
         except Exception as e:
             logger.error(f"计算文本相似度时发生错误: {e}")
             return 0.0
+    
+    @staticmethod
+    def batch_text_similarity(texts1: List[str], texts2: List[str], 
+                            vectorizer: BGEVectorizer) -> List[List[float]]:
+        """批量计算文本相似度矩阵
+        
+        Args:
+            texts1 (List[str]): 第一组文本列表
+            texts2 (List[str]): 第二组文本列表
+            vectorizer (BGEVectorizer): BGE向量化器
+            
+        Returns:
+            List[List[float]]: 相似度矩阵，形状为[len(texts1), len(texts2)]
+        """
+        try:
+            # 批量获取向量
+            vectors1 = vectorizer.get_text_vectors(texts1)
+            vectors2 = vectorizer.get_text_vectors(texts2)
+            
+            # 计算相似度矩阵
+            similarity_matrix = []
+            for i, v1 in enumerate(vectors1):
+                row = []
+                for j, v2 in enumerate(vectors2):
+                    similarity = SimilarityCalculator.cosine_similarity_vectors(v1, v2)
+                    row.append(similarity)
+                similarity_matrix.append(row)
+            
+            return similarity_matrix
+            
+        except Exception as e:
+            logger.error(f"批量计算文本相似度时发生错误: {e}")
+            return [[0.0] * len(texts2) for _ in range(len(texts1))]
 
 
 class ReadabilityCalculator:
@@ -552,9 +653,6 @@ class SentimentCalculator:
             }
 
 
-
-
-
 def create_sentiment_calculator_from_file(emotion_dict_path: str, 
                                         preprocessor: Optional[TextPreprocessor] = None) -> Optional[SentimentCalculator]:
     """从情感词典文件创建情感计算器的便利函数
@@ -584,4 +682,38 @@ def create_sentiment_calculator_from_file(emotion_dict_path: str,
         
     except Exception as e:
         logger.error(f"从文件创建情感计算器时发生错误: {e}")
+        return None
+
+
+def create_bge_vectorizer(model_name: str = "BAAI/bge-large-zh-v1.5",
+                         device: Optional[str] = None,
+                         normalize_embeddings: bool = True,
+                         use_instruction: bool = False,
+                         preprocessor: Optional[TextPreprocessor] = None) -> Optional[BGEVectorizer]:
+    """创建BGE向量化器的便利函数
+    
+    Args:
+        model_name (str): BGE模型名称
+        device (Optional[str]): 计算设备
+        normalize_embeddings (bool): 是否归一化嵌入向量
+        use_instruction (bool): 是否使用指令前缀
+        preprocessor (Optional[TextPreprocessor]): 文本预处理器
+        
+    Returns:
+        Optional[BGEVectorizer]: BGE向量化器实例，失败时返回None
+    """
+    try:
+        vectorizer = BGEVectorizer(
+            model_name=model_name,
+            device=device,
+            normalize_embeddings=normalize_embeddings,
+            use_instruction=use_instruction,
+            preprocessor=preprocessor
+        )
+        
+        logger.info(f"成功创建BGE向量化器: {model_name}")
+        return vectorizer
+        
+    except Exception as e:
+        logger.error(f"创建BGE向量化器时发生错误: {e}")
         return None
