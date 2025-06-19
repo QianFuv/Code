@@ -11,3 +11,4 @@ __pycache__
 
 /data/processed_data/origin_with_textmetric.csv
 /data/processed_data/origin_with_textmetric_short_sighted.csv
+/data/processed_data/unfilled_full.csv
