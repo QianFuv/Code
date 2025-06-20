@@ -288,77 +288,6 @@ class TextMetricCalculator:
             logger.error(f"❌ 处理央行文本时发生错误: {e}")
             return {}
     
-    def normalize_province_name(self, province_name: str) -> str:
-        """标准化省份名称 - 修复版本
-        
-        解决直辖市和省份名称不一致的问题
-        
-        Args:
-            province_name (str): 原始省份名称
-            
-        Returns:
-            str: 标准化后的省份名称
-        """
-        if not province_name:
-            return ""
-        
-        province_name = province_name.strip()
-        
-        # 定义直辖市的标准化映射
-        municipality_mapping = {
-            '北京': '北京',
-            '北京市': '北京',
-            '上海': '上海', 
-            '上海市': '上海',
-            '天津': '天津',
-            '天津市': '天津',
-            '重庆': '重庆',
-            '重庆市': '重庆'
-        }
-        
-        # 定义自治区的标准化映射
-        autonomous_region_mapping = {
-            '内蒙古': '内蒙古',
-            '内蒙古自治区': '内蒙古',
-            '广西': '广西',
-            '广西壮族自治区': '广西',
-            '西藏': '西藏',
-            '西藏自治区': '西藏',
-            '宁夏': '宁夏',
-            '宁夏回族自治区': '宁夏',
-            '新疆': '新疆',
-            '新疆维吾尔自治区': '新疆'
-        }
-        
-        # 特别行政区映射
-        special_region_mapping = {
-            '香港': '香港',
-            '香港特别行政区': '香港',
-            '澳门': '澳门',
-            '澳门特别行政区': '澳门',
-            '台湾': '台湾',
-            '台湾省': '台湾'
-        }
-        
-        # 首先检查是否是直辖市
-        if province_name in municipality_mapping:
-            return municipality_mapping[province_name]
-        
-        # 检查是否是自治区
-        if province_name in autonomous_region_mapping:
-            return autonomous_region_mapping[province_name]
-        
-        # 检查是否是特别行政区
-        if province_name in special_region_mapping:
-            return special_region_mapping[province_name]
-        
-        # 处理省份：移除"省"字
-        if province_name.endswith('省'):
-            return province_name[:-1]
-        
-        # 如果都不匹配，返回原名称
-        return province_name
-    
     def process_government_texts(self) -> Dict[Tuple[str, int], Dict[str, float]]:
         """处理政府文本数据
         
@@ -376,11 +305,6 @@ class TextMetricCalculator:
             # 读取政府文本数据
             gov_data = pd.read_excel(gov_file_path, engine='openpyxl')
             logger.info(f"政府文本数据加载完成，共 {len(gov_data)} 行")
-            
-            # 打印政府数据的省份列表用于调试
-            if '省份名称' in gov_data.columns:
-                unique_provinces = gov_data['省份名称'].dropna().unique()
-                logger.info(f"政府文本数据中的省份列表: {sorted(unique_provinces)}")
             
             # 过滤2001-2020年的数据
             valid_data = gov_data[(gov_data['会计年'] >= 2001) & (gov_data['会计年'] <= 2020)]
@@ -400,38 +324,24 @@ class TextMetricCalculator:
                 
                 for row_num, (idx, row) in pbar:
                     try:
-                        original_province = str(row['省份名称']).strip()
-                        # 使用标准化函数处理省份名称
-                        normalized_province = self.normalize_province_name(original_province)
+                        province = str(row['省份名称']).strip()
                         year = int(row['会计年'])
                         text_content = str(row['政府报告']).strip()
                         
-                        pbar.set_postfix(province=normalized_province[:4], year=year)
+                        pbar.set_postfix(province=province[:4], year=year)
                         
                         if not text_content or text_content == 'nan':
                             continue
                         
                         # 计算文本指标
                         metrics = self.calculate_text_metrics(text_content, baseline_text)
-                        # 使用标准化后的省份名称作为键
-                        government_metrics[(normalized_province, year)] = metrics
-                        
-                        # 添加调试信息
-                        if row_num < 5:  # 只打印前5条作为示例
-                            logger.debug(f"政府文本处理: {original_province} -> {normalized_province}, {year}")
+                        government_metrics[(province, year)] = metrics
                         
                     except Exception as e:
                         logger.error(f"处理政府文本第 {row_num + 1} 行时发生错误: {e}")
                         continue
             
             logger.info(f"🎉 政府文本处理完成，共处理 {len(government_metrics)} 条数据")
-            
-            # 打印一些标准化后的省份名称用于调试
-            sample_provinces = set()
-            for (province, year), _ in list(government_metrics.items())[:10]:
-                sample_provinces.add(province)
-            logger.info(f"标准化后的省份名称示例: {sorted(sample_provinces)}")
-            
             return government_metrics
             
         except Exception as e:
@@ -563,6 +473,29 @@ class TextMetricCalculator:
             logger.error(f"❌ 处理管理层文本时发生错误: {e}")
             return {}
     
+    def normalize_province_name(self, province_name: str) -> str:
+        """标准化省份名称
+        
+        Args:
+            province_name (str): 原始省份名称
+            
+        Returns:
+            str: 标准化后的省份名称
+        """
+        if not province_name:
+            return ""
+        
+        province_name = province_name.strip()
+        
+        # 如果省份名称不以"省"结尾，且不是直辖市或特别行政区，则添加"省"
+        special_regions = {'北京', '上海', '天津', '重庆', '香港', '澳门', '台湾', 
+                          '内蒙古', '广西', '西藏', '宁夏', '新疆'}
+        
+        if province_name not in special_regions and not province_name.endswith('省'):
+            province_name += '省'
+        
+        return province_name
+    
     def merge_text_metrics_with_numeric_data(self, 
                                            central_bank_metrics: Dict[int, Dict[str, float]],
                                            government_metrics: Dict[Tuple[str, int], Dict[str, float]],
@@ -595,11 +528,6 @@ class TextMetricCalculator:
                 logger.error(f"数值数据中缺少必要的列: {missing_columns}")
                 logger.info(f"现有列名: {list(merged_data.columns)}")
                 raise ValueError(f"缺少必要的列: {missing_columns}")
-            
-            # 打印数值数据中的省份列表用于调试
-            if '所属省份' in merged_data.columns:
-                unique_provinces = merged_data['所属省份'].dropna().unique()
-                logger.info(f"数值数据中的省份列表: {sorted(unique_provinces)}")
             
             # 初始化文本指标列
             text_metric_columns = [
@@ -649,7 +577,6 @@ class TextMetricCalculator:
             # 合并政府指标
             logger.info("正在合并政府指标...")
             government_matched = 0
-            government_mismatch_examples = []
             
             with tqdm(merged_data.iterrows(), 
                      desc="合并政府指标", 
@@ -659,19 +586,19 @@ class TextMetricCalculator:
                 for idx, row in pbar:
                     try:
                         # 获取省份和年份
-                        original_province = str(row['所属省份']).strip()
+                        province = str(row['所属省份']).strip()
                         
                         if pd.isna(row['统计截止日期_年份']):
                             continue
                         
                         year = int(row['统计截止日期_年份'])
+                        pbar.set_postfix(province=province[:4], year=year)
                         
-                        # 使用标准化函数处理省份名称
-                        normalized_province = self.normalize_province_name(original_province)
-                        pbar.set_postfix(province=normalized_province[:4], year=year)
+                        # 从省份名称中移除"省"字进行匹配
+                        province_key = province.replace('省', '') if province.endswith('省') else province
                         
                         # 查找匹配的政府指标
-                        gov_key = (normalized_province, year)
+                        gov_key = (province_key, year)
                         if gov_key in government_metrics:
                             metrics = government_metrics[gov_key]
                             merged_data.at[idx, '政府_净语调'] = metrics['tone']
@@ -679,20 +606,12 @@ class TextMetricCalculator:
                             merged_data.at[idx, '政府_相似度'] = metrics['similarity']
                             merged_data.at[idx, '政府_可读性'] = metrics['readability']
                             government_matched += 1
-                        else:
-                            # 记录匹配失败的示例（限制数量避免日志过多）
-                            if len(government_mismatch_examples) < 10:
-                                government_mismatch_examples.append(f"{original_province} -> {normalized_province}, {year}")
                             
                     except Exception as e:
                         logger.warning(f"合并政府指标第 {idx} 行时发生错误: {e}")
                         continue
             
             logger.info(f"政府指标匹配成功: {government_matched} 条记录")
-            
-            # 打印匹配失败的示例
-            if government_mismatch_examples:
-                logger.info(f"政府指标匹配失败示例: {government_mismatch_examples}")
             
             # 合并管理层指标
             logger.info("正在合并管理层指标...")
