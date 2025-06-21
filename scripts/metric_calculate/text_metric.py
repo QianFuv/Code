@@ -203,12 +203,6 @@ class TextMetricCalculator:
         self.numeric_data: Optional[pd.DataFrame] = None
         self.text_metrics_data: Optional[pd.DataFrame] = None
         
-        # 相似度计算的基准文本（用于央行和政府文本）
-        self.baseline_texts = {
-            'central_bank': "央行实施稳健货币政策，保持流动性合理充裕，支持实体经济发展。",
-            'government': "政府坚持高质量发展，深化供给侧结构性改革，推进经济转型升级。"
-        }
-        
         # 初始化省份映射器
         try:
             self.province_mapper = ProvinceMapper(province_mapping_path)
@@ -281,12 +275,12 @@ class TextMetricCalculator:
             logger.error(f"❌ 加载数值数据时发生错误: {e}")
             raise
     
-    def calculate_text_metrics(self, text: str, baseline_text: Optional[str] = None) -> Dict[str, float]:
+    def calculate_text_metrics(self, text: str, previous_text: Optional[str] = None) -> Dict[str, float]:
         """计算单个文本的所有指标
         
         Args:
             text (str): 待分析文本
-            baseline_text (Optional[str]): 用于相似度计算的基准文本
+            previous_text (Optional[str]): 用于相似度计算的前一年文本
             
         Returns:
             Dict[str, float]: 包含所有指标的字典
@@ -333,13 +327,12 @@ class TextMetricCalculator:
             tone = sentiment_metrics['tone']
             negative_tone = sentiment_metrics['negative_tone']
             
-            # 计算相似度
-            if baseline_text:
+            # 计算与前一年文本的相似度
+            similarity = 0.0
+            if previous_text and previous_text.strip():
                 similarity = SimilarityCalculator.text_similarity(
-                    text, baseline_text, self.vectorizer
+                    text, previous_text, self.vectorizer
                 )
-            else:
-                similarity = 0.0
             
             # 计算可读性（使用字符级别）
             readability = self.readability_calculator.calculate_readability(
@@ -364,6 +357,8 @@ class TextMetricCalculator:
     
     def process_central_bank_texts(self) -> Dict[int, Dict[str, float]]:
         """处理央行文本数据
+        
+        计算央行相似度：本年度与上一年度央行文本的相似度
         
         Returns:
             Dict[int, Dict[str, float]]: 以年份为键的央行文本指标字典
@@ -393,11 +388,14 @@ class TextMetricCalculator:
                 logger.warning("未找到有效的央行文本文件")
                 return {}
             
-            central_bank_metrics = {}
-            baseline_text = self.baseline_texts['central_bank']
+            # 按年份排序
+            valid_files.sort(key=lambda x: x[1])
             
-            # 使用tqdm显示进度
-            with tqdm(valid_files, desc="处理央行文本", unit="文件") as pbar:
+            # 第一步：收集所有年份的文本内容
+            logger.info("正在读取央行文本内容...")
+            yearly_texts = {}  # {年份: 文本内容}
+            
+            with tqdm(valid_files, desc="读取央行文本", unit="文件") as pbar:
                 for txt_file, year in pbar:
                     try:
                         pbar.set_postfix(year=year)
@@ -410,15 +408,43 @@ class TextMetricCalculator:
                             logger.warning(f"央行文本文件为空: {txt_file}")
                             continue
                         
-                        # 计算文本指标
-                        metrics = self.calculate_text_metrics(text_content, baseline_text)
+                        yearly_texts[year] = text_content
+                        
+                    except Exception as e:
+                        logger.error(f"读取央行文本文件 {txt_file} 时发生错误: {e}")
+                        continue
+            
+            logger.info(f"成功读取 {len(yearly_texts)} 年的央行文本")
+            
+            # 第二步：计算每年的指标，包括与前一年的相似度
+            central_bank_metrics = {}
+            similarity_count = 0
+            
+            with tqdm(sorted(yearly_texts.keys()), desc="计算央行指标", unit="年") as pbar:
+                for year in pbar:
+                    try:
+                        pbar.set_postfix(year=year)
+                        
+                        current_text = yearly_texts[year]
+                        previous_year = year - 1
+                        previous_text = yearly_texts.get(previous_year)
+                        
+                        # 计算文本指标（包括与前一年的相似度）
+                        metrics = self.calculate_text_metrics(current_text, previous_text)
+                        
+                        # 记录相似度计算成功的次数
+                        if metrics['similarity'] > 0:
+                            similarity_count += 1
+                        
                         central_bank_metrics[year] = metrics
                         
                     except Exception as e:
-                        logger.error(f"处理央行文本文件 {txt_file} 时发生错误: {e}")
+                        logger.error(f"计算央行文本指标 {year} 年时发生错误: {e}")
                         continue
             
             logger.info(f"🎉 央行文本处理完成，共处理 {len(central_bank_metrics)} 年的数据")
+            logger.info(f"成功计算相似度的记录数: {similarity_count}/{len(central_bank_metrics)}")
+            
             return central_bank_metrics
             
         except Exception as e:
@@ -427,6 +453,8 @@ class TextMetricCalculator:
     
     def process_government_texts(self) -> Dict[Tuple[str, int], Dict[str, float]]:
         """处理政府文本数据
+        
+        计算政府相似度：同一省份本年度与上一年度政府报告的相似度
         
         Returns:
             Dict[Tuple[str, int], Dict[str, float]]: 以(省份全称, 年份)为键的政府文本指标字典
@@ -450,15 +478,13 @@ class TextMetricCalculator:
             
             logger.info(f"有效的政府文本数据: {len(valid_data)} 条")
             
-            government_metrics = {}
-            baseline_text = self.baseline_texts['government']
-            
-            # 统计省份转换情况
+            # 第一步：整理数据，按省份和年份组织
+            logger.info("正在整理政府文本数据...")
+            province_texts = {}  # {省份全称: {年份: 文本内容}}
             conversion_stats = {'success': 0, 'failed': 0, 'failed_provinces': set()}
             
-            # 使用tqdm显示进度
             with tqdm(enumerate(valid_data.iterrows()), 
-                     desc="处理政府文本", 
+                     desc="整理政府文本", 
                      unit="条", 
                      total=len(valid_data)) as pbar:
                 
@@ -483,26 +509,65 @@ class TextMetricCalculator:
                             province_full = self._fallback_province_conversion(province_short)
                             conversion_stats['failed'] += 1
                             conversion_stats['failed_provinces'].add(province_short)
-                            logger.warning(f"省份 '{province_short}' 转换失败，使用fallback转换: '{province_full}'")
                         else:
                             conversion_stats['success'] += 1
                         
-                        # 计算文本指标
-                        metrics = self.calculate_text_metrics(text_content, baseline_text)
+                        # 按省份组织文本数据
+                        if province_full not in province_texts:
+                            province_texts[province_full] = {}
                         
-                        # 使用省份全称作为键
-                        government_metrics[(province_full, year)] = metrics
+                        province_texts[province_full][year] = text_content
                         
                     except Exception as e:
-                        logger.error(f"处理政府文本第 {row_num + 1} 行时发生错误: {e}")
+                        logger.error(f"整理政府文本第 {row_num + 1} 行时发生错误: {e}")
                         continue
+            
+            logger.info(f"整理完成，共 {len(province_texts)} 个省份的文本数据")
             
             # 记录省份转换统计信息
             logger.info(f"省份转换统计: 成功 {conversion_stats['success']} 条, 失败 {conversion_stats['failed']} 条")
             if conversion_stats['failed_provinces']:
                 logger.warning(f"转换失败的省份: {sorted(conversion_stats['failed_provinces'])}")
             
+            # 第二步：计算每个省份每年的指标，包括与前一年的相似度
+            government_metrics = {}
+            similarity_count = 0
+            
+            # 计算总的处理条目数
+            total_items = sum(len(year_texts) for year_texts in province_texts.values())
+            
+            with tqdm(total=total_items, desc="计算政府指标", unit="条") as pbar:
+                for province_full, year_texts in province_texts.items():
+                    try:
+                        for year, current_text in year_texts.items():
+                            pbar.set_postfix(province=province_full[:4], year=year)
+                            
+                            # 获取前一年的文本
+                            previous_year = year - 1
+                            previous_text = year_texts.get(previous_year)
+                            
+                            # 计算文本指标（包括与前一年的相似度）
+                            metrics = self.calculate_text_metrics(current_text, previous_text)
+                            
+                            # 记录相似度计算成功的次数
+                            if metrics['similarity'] > 0:
+                                similarity_count += 1
+                            
+                            # 使用省份全称作为键
+                            government_metrics[(province_full, year)] = metrics
+                            
+                            pbar.update(1)
+                            
+                    except Exception as e:
+                        logger.error(f"处理省份 {province_full} 政府文本时发生错误: {e}")
+                        # 仍然更新进度条
+                        remaining_items = len(year_texts)
+                        pbar.update(remaining_items)
+                        continue
+            
             logger.info(f"🎉 政府文本处理完成，共处理 {len(government_metrics)} 条数据")
+            logger.info(f"成功计算相似度的记录数: {similarity_count}/{len(government_metrics)}")
+            
             return government_metrics
             
         except Exception as e:
