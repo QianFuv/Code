@@ -39,6 +39,133 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ProvinceMapper:
+    """省份名称映射器类
+    
+    负责加载省份简称全称对照表，提供省份名称转换功能。
+    """
+    
+    def __init__(self, mapping_file_path: str = "data/original_data/text_data/省份简称全称对照表.csv"):
+        """初始化省份映射器
+        
+        Args:
+            mapping_file_path (str): 省份简称全称对照表文件路径
+        """
+        self.mapping_file_path = Path(mapping_file_path)
+        self.short_to_full: Dict[str, str] = {}  # 简称到全称的映射
+        self.full_to_short: Dict[str, str] = {}  # 全称到简称的映射
+        self._load_province_mapping()
+    
+    def _load_province_mapping(self) -> None:
+        """加载省份简称全称对照表"""
+        try:
+            if not self.mapping_file_path.exists():
+                logger.error(f"省份对照表文件不存在: {self.mapping_file_path}")
+                return
+            
+            # 读取省份对照表
+            mapping_df = pd.read_csv(self.mapping_file_path, encoding='utf-8')
+            
+            # 检查必要的列是否存在
+            required_columns = ['省份简称', '省份全称']
+            missing_columns = [col for col in required_columns if col not in mapping_df.columns]
+            
+            if missing_columns:
+                logger.error(f"省份对照表中缺少必要的列: {missing_columns}")
+                logger.info(f"现有列名: {list(mapping_df.columns)}")
+                return
+            
+            # 建立映射关系
+            for _, row in mapping_df.iterrows():
+                short_name = str(row['省份简称']).strip()
+                full_name = str(row['省份全称']).strip()
+                
+                if short_name and full_name and short_name != 'nan' and full_name != 'nan':
+                    self.short_to_full[short_name] = full_name
+                    self.full_to_short[full_name] = short_name
+            
+            logger.info(f"✅ 省份对照表加载完成，共 {len(self.short_to_full)} 个省份映射关系")
+            logger.info(f"示例映射: {dict(list(self.short_to_full.items())[:3])}")
+            
+        except Exception as e:
+            logger.error(f"❌ 加载省份对照表时发生错误: {e}")
+    
+    def short_to_full_name(self, short_name: str) -> Optional[str]:
+        """将省份简称转换为全称
+        
+        Args:
+            short_name (str): 省份简称
+            
+        Returns:
+            Optional[str]: 省份全称，如果找不到匹配则返回None
+        """
+        if not short_name:
+            return None
+        
+        short_name = short_name.strip()
+        return self.short_to_full.get(short_name)
+    
+    def full_to_short_name(self, full_name: str) -> Optional[str]:
+        """将省份全称转换为简称
+        
+        Args:
+            full_name (str): 省份全称
+            
+        Returns:
+            Optional[str]: 省份简称，如果找不到匹配则返回None
+        """
+        if not full_name:
+            return None
+        
+        full_name = full_name.strip()
+        return self.full_to_short.get(full_name)
+    
+    def normalize_province_for_matching(self, province_name: str, target_format: str = 'full') -> Optional[str]:
+        """标准化省份名称用于匹配
+        
+        Args:
+            province_name (str): 原始省份名称
+            target_format (str): 目标格式，'full'表示全称，'short'表示简称
+            
+        Returns:
+            Optional[str]: 标准化后的省份名称，失败时返回None
+        """
+        if not province_name:
+            return None
+        
+        province_name = province_name.strip()
+        
+        if target_format == 'full':
+            # 转换为全称
+            # 首先检查是否已经是全称
+            if province_name in self.full_to_short:
+                return province_name
+            # 尝试从简称转换
+            full_name = self.short_to_full_name(province_name)
+            if full_name:
+                return full_name
+            # 如果都找不到，记录警告并返回原名称（可能是特殊情况）
+            logger.warning(f"未找到省份 '{province_name}' 的全称映射")
+            return province_name
+            
+        elif target_format == 'short':
+            # 转换为简称
+            # 首先检查是否已经是简称
+            if province_name in self.short_to_full:
+                return province_name
+            # 尝试从全称转换
+            short_name = self.full_to_short_name(province_name)
+            if short_name:
+                return short_name
+            # 如果都找不到，记录警告并返回原名称
+            logger.warning(f"未找到省份 '{province_name}' 的简称映射")
+            return province_name
+        
+        else:
+            logger.error(f"不支持的目标格式: {target_format}")
+            return None
+
+
 class TextMetricCalculator:
     """文本指标计算器
     
@@ -49,7 +176,8 @@ class TextMetricCalculator:
                  numeric_data_path: str = "data/original_data/numeric_data/2001-2020年制造业数值数据.xlsx",
                  emotion_dict_path: str = "data/processed_data/emo_dict.csv",
                  stopwords_path: str = "data/processed_data/stop_words.txt",
-                 bge_model_name: str = "BAAI/bge-large-zh-v1.5"):
+                 bge_model_name: str = "BAAI/bge-large-zh-v1.5",
+                 province_mapping_path: str = "data/original_data/text_data/省份简称全称对照表.csv"):
         """初始化文本指标计算器
         
         Args:
@@ -57,6 +185,7 @@ class TextMetricCalculator:
             emotion_dict_path (str): 情感词典文件路径  
             stopwords_path (str): 停用词文件路径
             bge_model_name (str): BGE模型名称
+            province_mapping_path (str): 省份简称全称对照表文件路径
         """
         self.numeric_data_path = Path(numeric_data_path)
         self.emotion_dict_path = Path(emotion_dict_path)
@@ -68,6 +197,7 @@ class TextMetricCalculator:
         self.vectorizer: Optional[BGEVectorizer] = None
         self.sentiment_calculator: Optional[SentimentCalculator] = None
         self.readability_calculator: Optional[ReadabilityCalculator] = None
+        self.province_mapper: Optional[ProvinceMapper] = None
         
         # 数据存储
         self.numeric_data: Optional[pd.DataFrame] = None
@@ -78,6 +208,13 @@ class TextMetricCalculator:
             'central_bank': "央行实施稳健货币政策，保持流动性合理充裕，支持实体经济发展。",
             'government': "政府坚持高质量发展，深化供给侧结构性改革，推进经济转型升级。"
         }
+        
+        # 初始化省份映射器
+        try:
+            self.province_mapper = ProvinceMapper(province_mapping_path)
+        except Exception as e:
+            logger.error(f"初始化省份映射器失败: {e}")
+            self.province_mapper = None
         
         logger.info("文本指标计算器初始化完成")
     
@@ -292,7 +429,7 @@ class TextMetricCalculator:
         """处理政府文本数据
         
         Returns:
-            Dict[Tuple[str, int], Dict[str, float]]: 以(省份, 年份)为键的政府文本指标字典
+            Dict[Tuple[str, int], Dict[str, float]]: 以(省份全称, 年份)为键的政府文本指标字典
         """
         try:
             logger.info("开始处理政府文本数据...")
@@ -316,6 +453,9 @@ class TextMetricCalculator:
             government_metrics = {}
             baseline_text = self.baseline_texts['government']
             
+            # 统计省份转换情况
+            conversion_stats = {'success': 0, 'failed': 0, 'failed_provinces': set()}
+            
             # 使用tqdm显示进度
             with tqdm(enumerate(valid_data.iterrows()), 
                      desc="处理政府文本", 
@@ -324,22 +464,43 @@ class TextMetricCalculator:
                 
                 for row_num, (idx, row) in pbar:
                     try:
-                        province = str(row['省份名称']).strip()
+                        province_short = str(row['省份名称']).strip()  # 政府报告中的省份简称
                         year = int(row['会计年'])
                         text_content = str(row['政府报告']).strip()
                         
-                        pbar.set_postfix(province=province[:4], year=year)
+                        pbar.set_postfix(province=province_short[:4], year=year)
                         
                         if not text_content or text_content == 'nan':
                             continue
                         
+                        # 使用省份映射器将简称转换为全称
+                        province_full = None
+                        if self.province_mapper:
+                            province_full = self.province_mapper.short_to_full_name(province_short)
+                        
+                        if not province_full:
+                            # 如果省份映射器不可用或转换失败，尝试简单的规则转换
+                            province_full = self._fallback_province_conversion(province_short)
+                            conversion_stats['failed'] += 1
+                            conversion_stats['failed_provinces'].add(province_short)
+                            logger.warning(f"省份 '{province_short}' 转换失败，使用fallback转换: '{province_full}'")
+                        else:
+                            conversion_stats['success'] += 1
+                        
                         # 计算文本指标
                         metrics = self.calculate_text_metrics(text_content, baseline_text)
-                        government_metrics[(province, year)] = metrics
+                        
+                        # 使用省份全称作为键
+                        government_metrics[(province_full, year)] = metrics
                         
                     except Exception as e:
                         logger.error(f"处理政府文本第 {row_num + 1} 行时发生错误: {e}")
                         continue
+            
+            # 记录省份转换统计信息
+            logger.info(f"省份转换统计: 成功 {conversion_stats['success']} 条, 失败 {conversion_stats['failed']} 条")
+            if conversion_stats['failed_provinces']:
+                logger.warning(f"转换失败的省份: {sorted(conversion_stats['failed_provinces'])}")
             
             logger.info(f"🎉 政府文本处理完成，共处理 {len(government_metrics)} 条数据")
             return government_metrics
@@ -347,6 +508,47 @@ class TextMetricCalculator:
         except Exception as e:
             logger.error(f"❌ 处理政府文本时发生错误: {e}")
             return {}
+    
+    def _fallback_province_conversion(self, province_short: str) -> str:
+        """备用的省份转换方法
+        
+        当省份映射器不可用时使用的简单转换规则。
+        
+        Args:
+            province_short (str): 省份简称
+            
+        Returns:
+            str: 省份全称（尽力转换）
+        """
+        if not province_short:
+            return ""
+        
+        province_short = province_short.strip()
+        
+        # 特殊地区处理
+        special_regions = {
+            '北京': '北京市',
+            '上海': '上海市',
+            '天津': '天津市',
+            '重庆': '重庆市',
+            '内蒙古': '内蒙古自治区',
+            '广西': '广西壮族自治区',
+            '西藏': '西藏自治区',
+            '宁夏': '宁夏回族自治区',
+            '新疆': '新疆维吾尔自治区',
+            '香港': '香港特别行政区',
+            '澳门': '澳门特别行政区',
+            '台湾': '台湾省'
+        }
+        
+        if province_short in special_regions:
+            return special_regions[province_short]
+        
+        # 一般省份：如果不以"省"结尾，则添加"省"
+        if not province_short.endswith('省'):
+            return province_short + '省'
+        
+        return province_short
     
     def process_management_texts(self) -> Dict[Tuple[str, int], Dict[str, float]]:
         """处理管理层文本数据
@@ -473,29 +675,6 @@ class TextMetricCalculator:
             logger.error(f"❌ 处理管理层文本时发生错误: {e}")
             return {}
     
-    def normalize_province_name(self, province_name: str) -> str:
-        """标准化省份名称
-        
-        Args:
-            province_name (str): 原始省份名称
-            
-        Returns:
-            str: 标准化后的省份名称
-        """
-        if not province_name:
-            return ""
-        
-        province_name = province_name.strip()
-        
-        # 如果省份名称不以"省"结尾，且不是直辖市或特别行政区，则添加"省"
-        special_regions = {'北京', '上海', '天津', '重庆', '香港', '澳门', '台湾', 
-                          '内蒙古', '广西', '西藏', '宁夏', '新疆'}
-        
-        if province_name not in special_regions and not province_name.endswith('省'):
-            province_name += '省'
-        
-        return province_name
-    
     def merge_text_metrics_with_numeric_data(self, 
                                            central_bank_metrics: Dict[int, Dict[str, float]],
                                            government_metrics: Dict[Tuple[str, int], Dict[str, float]],
@@ -504,7 +683,7 @@ class TextMetricCalculator:
         
         Args:
             central_bank_metrics: 央行文本指标
-            government_metrics: 政府文本指标  
+            government_metrics: 政府文本指标，键为(省份全称, 年份)
             management_metrics: 管理层文本指标
             
         Returns:
@@ -577,6 +756,7 @@ class TextMetricCalculator:
             # 合并政府指标
             logger.info("正在合并政府指标...")
             government_matched = 0
+            government_match_failed = 0
             
             with tqdm(merged_data.iterrows(), 
                      desc="合并政府指标", 
@@ -586,19 +766,17 @@ class TextMetricCalculator:
                 for idx, row in pbar:
                     try:
                         # 获取省份和年份
-                        province = str(row['所属省份']).strip()
+                        province_full_from_numeric = str(row['所属省份']).strip()  # 数值数据中的省份全称
                         
                         if pd.isna(row['统计截止日期_年份']):
                             continue
                         
                         year = int(row['统计截止日期_年份'])
-                        pbar.set_postfix(province=province[:4], year=year)
+                        pbar.set_postfix(province=province_full_from_numeric[:4], year=year)
                         
-                        # 从省份名称中移除"省"字进行匹配
-                        province_key = province.replace('省', '') if province.endswith('省') else province
+                        # 直接使用省份全称进行匹配（政府指标字典的键已经是省份全称）
+                        gov_key = (province_full_from_numeric, year)
                         
-                        # 查找匹配的政府指标
-                        gov_key = (province_key, year)
                         if gov_key in government_metrics:
                             metrics = government_metrics[gov_key]
                             merged_data.at[idx, '政府_净语调'] = metrics['tone']
@@ -606,12 +784,37 @@ class TextMetricCalculator:
                             merged_data.at[idx, '政府_相似度'] = metrics['similarity']
                             merged_data.at[idx, '政府_可读性'] = metrics['readability']
                             government_matched += 1
+                        else:
+                            government_match_failed += 1
+                            # 如果直接匹配失败，可以尝试一些变体匹配
+                            possible_variants = [
+                                province_full_from_numeric.replace('省', ''),  # 去掉"省"字
+                                province_full_from_numeric + '省' if not province_full_from_numeric.endswith('省') else province_full_from_numeric,  # 添加"省"字
+                            ]
+                            
+                            matched = False
+                            for variant in possible_variants:
+                                variant_key = (variant, year)
+                                if variant_key in government_metrics:
+                                    metrics = government_metrics[variant_key]
+                                    merged_data.at[idx, '政府_净语调'] = metrics['tone']
+                                    merged_data.at[idx, '政府_负语调'] = metrics['negative_tone']
+                                    merged_data.at[idx, '政府_相似度'] = metrics['similarity']
+                                    merged_data.at[idx, '政府_可读性'] = metrics['readability']
+                                    government_matched += 1
+                                    government_match_failed -= 1
+                                    matched = True
+                                    break
+                            
+                            if not matched:
+                                logger.debug(f"未找到匹配的政府指标: {gov_key}")
                             
                     except Exception as e:
                         logger.warning(f"合并政府指标第 {idx} 行时发生错误: {e}")
                         continue
             
             logger.info(f"政府指标匹配成功: {government_matched} 条记录")
+            logger.info(f"政府指标匹配失败: {government_match_failed} 条记录")
             
             # 合并管理层指标
             logger.info("正在合并管理层指标...")
